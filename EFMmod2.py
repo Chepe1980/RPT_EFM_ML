@@ -2,7 +2,7 @@
 ================================================================================
 STREAMLIT APP: HYBRID PHYSICS-ML VELOCITY PREDICTION FOR CARBONATE ROCKS
 ================================================================================
-Complete application with Plotly visualizations
+Same structure as previous working code, but with Plotly instead of matplotlib
 """
 
 import streamlit as st
@@ -14,14 +14,12 @@ from plotly.subplots import make_subplots
 import warnings
 warnings.filterwarnings('ignore')
 
-# Machine Learning imports
+# Machine Learning components
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
-
-# Scientific imports
 from scipy.special import iv
 
 # Set page configuration
@@ -32,7 +30,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for styling
+# Custom CSS for better styling
 st.markdown("""
 <style>
     .main-header {
@@ -49,13 +47,14 @@ st.markdown("""
         margin-top: 2rem;
         margin-bottom: 1rem;
     }
-    .metric-card {
-        background-color: #F8FAFC;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border: 1px solid #E2E8F0;
-        text-align: center;
-        margin: 0.5rem 0;
+    .section-header {
+        font-size: 1.4rem;
+        color: #374151;
+        font-weight: bold;
+        margin-top: 1.5rem;
+        margin-bottom: 1rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 2px solid #E5E7EB;
     }
     .success-box {
         background-color: #D1FAE5;
@@ -71,68 +70,85 @@ st.markdown("""
         border-left: 4px solid #F59E0B;
         margin: 1rem 0;
     }
-    .plot-container {
-        border-radius: 0.5rem;
+    .info-box {
+        background-color: #DBEAFE;
         padding: 1rem;
-        background-color: white;
-        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+        border-radius: 0.5rem;
+        border-left: 4px solid #3B82F6;
         margin: 1rem 0;
     }
-    .stButton > button {
-        width: 100%;
+    .metric-card {
+        background-color: #F8FAFC;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border: 1px solid #E2E8F0;
+        text-align: center;
+        margin: 0.5rem 0;
+    }
+    .stProgress > div > div > div > div {
+        background-color: #3B82F6;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# EFFECTIVE FIELD METHOD (PHYSICS MODEL)
+# FIXED PHYSICS-BASED MODEL
 # ==============================================================================
 
 class EffectiveFieldMethod:
-    """Physics-based model for cracked elastic media."""
+    """
+    Fixed implementation of the effective field method
+    """
     
     def __init__(self, matrix_props, crack_props):
-        self.matrix = matrix_props.copy()
-        self.crack = crack_props.copy()
+        self.matrix = matrix_props
+        self.crack = crack_props
+        
+        # Calculate moduli
         self._calculate_moduli()
     
     def _calculate_moduli(self):
-        """Calculate elastic moduli from velocities."""
+        """Calculate elastic moduli with unit consistency"""
         mat = self.matrix
         
-        # Convert density to kg/m³
+        # Convert density from g/cc to kg/m³ for calculations
         if 'rho' in mat:
             mat['rho_kgm3'] = mat['rho'] * 1000
         else:
-            mat['rho_kgm3'] = 2650
+            mat['rho_kgm3'] = 2650  # Default limestone density
         
-        # Calculate moduli if velocities are provided
+        # Calculate moduli in Pa
         if 'Vp' in mat and 'Vs' in mat:
+            # G = ρ * Vs² (in Pa)
             mat['G'] = mat['rho_kgm3'] * mat['Vs']**2
+            
+            # K = ρ * (Vp² - 4/3 * Vs²)
             mat['K'] = mat['rho_kgm3'] * (mat['Vp']**2 - (4/3) * mat['Vs']**2)
-            vp2, vs2 = mat['Vp']**2, mat['Vs']**2
-            mat['nu'] = (vp2 - 2*vs2) / (2*(vp2 - vs2))
+            
+            # Poisson's ratio
+            mat['nu'] = (mat['Vp']**2 - 2*mat['Vs']**2) / (2*(mat['Vp']**2 - mat['Vs']**2))
     
-    def orientation_factor(self, beta, distribution='uniform'):
-        """Calculate orientation distribution factor."""
+    def orientation_distribution_function(self, beta, distribution='uniform'):
+        """Calculate F(β) with safe numerical handling"""
         beta = float(beta)
         
         if distribution == 'uniform':
-            if beta <= 1e-10:
+            if beta == 0 or np.isnan(beta):
                 return 1.0
             return (beta + np.sin(beta) * np.cos(beta)) / (2 * beta)
         
         elif distribution == 'von_mises':
-            if beta <= 1e-10:
+            if beta == 0 or np.isnan(beta):
                 return 1.0, 1.0
             
-            sigma = max(beta, 0.001)
+            sigma = max(beta, 0.001)  # Avoid zero
             z = 1.0 / (sigma ** 2)
             
             try:
                 I0 = iv(0, z)
                 I1 = iv(1, z)
                 I2 = iv(2, z)
+                
                 F1 = (sigma**2 * I1 + I2) / I0
                 F2 = (sigma**2 * I1) / I0
                 return F1, F2
@@ -141,61 +157,53 @@ class EffectiveFieldMethod:
         
         return 1.0
     
-    def estimate_crack_params(self, porosity, sw=1.0, rt=1.0, vclay=0):
-        """Estimate crack parameters from well logs."""
+    def estimate_crack_parameters(self, porosity, sw=1.0, rt=1.0, vclay=0):
+        """
+        Estimate crack parameters from well logs with safe handling
+        """
+        # Ensure valid inputs
         porosity = max(float(porosity), 0.001)
-        sw = min(max(float(sw), 0.0), 1.0)
+        sw = min(max(float(sw), 0), 1.0)
         rt = max(float(rt), 0.1)
-        
-        # Convert vclay to fraction
-        if vclay > 1.0:
-            vclay_frac = vclay / 100.0
-        else:
-            vclay_frac = vclay
-        vclay_frac = min(max(vclay_frac, 0.0), 0.7)
+        vclay = min(max(float(vclay), 0), 100)
         
         # Estimate crack density
-        aspect_ratio = self.crack.get('aspect_ratio', 0.01)
-        crack_density = (3.0 * porosity * sw) / (4.0 * np.pi * aspect_ratio)
+        aspect_ratio = 0.01  # Typical for microcracks
+        crack_density = (3 * porosity * sw) / (4 * np.pi * aspect_ratio)
         
-        # Clay reduction
-        clay_factor = 1.0 - vclay_frac * 1.5
-        crack_density *= max(clay_factor, 0.3)
+        # Adjust for clay content
+        clay_factor = 1.0 - min(vclay / 100.0, 0.7)
+        crack_density *= clay_factor
         
         # Estimate orientation from resistivity
         rt_factor = np.log10(max(rt, 0.1)) / 3.0
-        rt_factor = min(max(rt_factor, 0.1), 1.0)
+        beta = np.pi/4 * (1 - 0.3 * rt_factor)  # 45° for isotropic
         
-        beta_base = np.pi / 4
-        beta = beta_base * (1.0 - 0.3 * rt_factor)
-        beta *= (1.0 + 0.2 * vclay_frac)
-        
-        # Physical bounds
-        crack_density = min(max(crack_density, 0.0), 0.5)
-        beta = min(max(beta, 0.0), np.pi / 2)
+        # Bound values
+        crack_density = min(max(crack_density, 0), 0.5)
+        beta = min(max(beta, 0), np.pi/2)
         
         return crack_density, beta
     
-    def calculate_effective(self, crack_density, beta):
-        """Calculate effective elastic properties."""
+    def calculate_effective_properties(self, crack_density, beta):
+        """
+        Calculate effective properties with simplified model
+        """
         # Matrix properties
-        K0 = self.matrix.get('K', 50e9)
-        G0 = self.matrix.get('G', 30e9)
+        K0 = self.matrix.get('K', 50e9)  # Default 50 GPa
+        G0 = self.matrix.get('G', 30e9)  # Default 30 GPa
         rho0 = self.matrix.get('rho_kgm3', 2650)
         
         # Get orientation factor
-        F_val = self.orientation_factor(beta, 'uniform')
+        F_val = self.orientation_distribution_function(beta, 'uniform')
         
-        # Simplified effective moduli
-        K_eff = K0 * (1.0 - crack_density * 0.8 * F_val)
-        G_eff = G0 * (1.0 - crack_density * 0.6 * F_val)
-        
-        # Ensure positive moduli
-        K_eff = max(K_eff, 0.1 * K0)
-        G_eff = max(G_eff, 0.1 * G0)
+        # Simplified effective moduli calculation
+        # Based on crack density and orientation
+        K_eff = K0 * (1 - crack_density * 0.8 * F_val)
+        G_eff = G0 * (1 - crack_density * 0.6 * F_val)
         
         # Calculate velocities
-        Vp_eff = np.sqrt((K_eff + 4.0 * G_eff / 3.0) / rho0)
+        Vp_eff = np.sqrt((K_eff + 4*G_eff/3) / rho0)
         Vs_eff = np.sqrt(G_eff / rho0)
         
         return {
@@ -205,16 +213,17 @@ class EffectiveFieldMethod:
             'G': G_eff,
             'crack_density': crack_density,
             'beta': beta,
-            'F': F_val,
-            'Vp/Vs': Vp_eff / Vs_eff if Vs_eff > 0 else 0
+            'F': F_val
         }
 
 # ==============================================================================
-# HYBRID PHYSICS-ML MODEL
+# FIXED HYBRID MODEL WITH PROPER NaN HANDLING
 # ==============================================================================
 
 class HybridVelocityPredictor:
-    """Hybrid model combining physics and machine learning."""
+    """
+    Fixed hybrid model with proper data handling
+    """
     
     def __init__(self, matrix_props=None):
         self.efm_model = None
@@ -223,35 +232,34 @@ class HybridVelocityPredictor:
         self.imputer = SimpleImputer(strategy='median')
         self.matrix_props = matrix_props
         self.feature_importances = {}
-        self.feature_names = []
-    
-    def create_features(self, df):
-        """Create feature matrix from input data."""
-        features = pd.DataFrame()
         
-        # Basic features
+    def create_safe_features(self, df):
+        """
+        Create features with safe numerical handling
+        """
+        features = {}
+        
+        # Basic features with NaN handling
         basic_cols = ['porosity', 'rho', 'sw']
         for col in basic_cols:
             if col in df.columns:
-                series = pd.to_numeric(df[col], errors='coerce')
-                if series.isna().any():
-                    series = series.fillna(series.median())
-                features[col] = series
+                features[col] = pd.to_numeric(df[col], errors='coerce').fillna(df[col].median())
         
-        # Additional features
+        # Additional features if available
         if 'Vclay' in df.columns:
             features['Vclay'] = pd.to_numeric(df['Vclay'], errors='coerce').fillna(0)
         
         if 'RT' in df.columns:
-            features['RT'] = pd.to_numeric(df['RT'], errors='coerce')
-            features['RT'] = features['RT'].fillna(features['RT'].median())
+            features['RT'] = pd.to_numeric(df['RT'], errors='coerce').fillna(df['RT'].median())
             features['RT_log'] = np.log10(np.maximum(features['RT'], 0.1))
         
         if 'GR' in df.columns:
-            features['GR'] = pd.to_numeric(df['GR'], errors='coerce')
-            features['GR'] = features['GR'].fillna(features['GR'].median())
+            features['GR'] = pd.to_numeric(df['GR'], errors='coerce').fillna(df['GR'].median())
         
-        # Physics-based features if EFM available
+        # Convert to DataFrame
+        features_df = pd.DataFrame(features)
+        
+        # Add physics-based features if EFM model is available
         if self.efm_model and self.matrix_props:
             crack_densities = []
             betas = []
@@ -259,19 +267,20 @@ class HybridVelocityPredictor:
             vp_efm = []
             vs_efm = []
             
-            n_samples = len(df)
-            
-            for idx in range(n_samples):
-                porosity_val = features['porosity'].iloc[idx] if 'porosity' in features.columns else 0.1
-                sw_val = features['sw'].iloc[idx] if 'sw' in features.columns else 1.0
-                rt_val = features['RT'].iloc[idx] if 'RT' in features.columns else 1.0
-                vclay_val = features['Vclay'].iloc[idx] if 'Vclay' in features.columns else 0.0
+            for idx in range(len(df)):
+                # Get values with safe access
+                porosity_val = features_df.iloc[idx]['porosity'] if 'porosity' in features_df.columns else 0.1
+                sw_val = features_df.iloc[idx]['sw'] if 'sw' in features_df.columns else 1.0
+                rt_val = features_df.iloc[idx]['RT'] if 'RT' in features_df.columns else 1.0
+                vclay_val = features_df.iloc[idx]['Vclay'] if 'Vclay' in features_df.columns else 0
                 
-                crack_density, beta = self.efm_model.estimate_crack_params(
+                # Estimate crack parameters
+                crack_density, beta = self.efm_model.estimate_crack_parameters(
                     porosity_val, sw_val, rt_val, vclay_val
                 )
                 
-                eff_props = self.efm_model.calculate_effective(crack_density, beta)
+                # Calculate effective properties
+                eff_props = self.efm_model.calculate_effective_properties(crack_density, beta)
                 
                 crack_densities.append(crack_density)
                 betas.append(beta)
@@ -279,101 +288,104 @@ class HybridVelocityPredictor:
                 vp_efm.append(eff_props['Vp'])
                 vs_efm.append(eff_props['Vs'])
             
-            features['crack_density'] = crack_densities
-            features['beta'] = betas
-            features['F'] = F_values
-            features['Vp_efm'] = vp_efm
-            features['Vs_efm'] = vs_efm
+            # Add to features
+            features_df['crack_density_efm'] = crack_densities
+            features_df['orientation_beta'] = betas
+            features_df['F_beta'] = F_values
+            features_df['Vp_efm'] = vp_efm
+            features_df['Vs_efm'] = vs_efm
         
-        # Feature engineering
-        if 'porosity' in features.columns:
-            features['porosity_sq'] = features['porosity'] ** 2
+        # Feature engineering with safe operations
+        if 'porosity' in features_df.columns:
+            features_df['porosity_sq'] = features_df['porosity'] ** 2
+            features_df['porosity_sqrt'] = np.sqrt(np.maximum(features_df['porosity'], 0))
         
-        if 'rho' in features.columns and 'porosity' in features.columns:
-            features['density_porosity'] = features['rho'] * features['porosity']
+        if 'rho' in features_df.columns:
+            features_df['density_porosity'] = features_df['rho'] * features_df['porosity']
         
-        if 'crack_density' in features.columns:
-            if 'porosity' in features.columns:
-                features['crack_porosity'] = features['crack_density'] * features['porosity']
+        # Interaction features
+        if 'crack_density_efm' in features_df.columns:
+            if 'porosity' in features_df.columns:
+                features_df['crack_porosity'] = features_df['crack_density_efm'] * features_df['porosity']
+            
+            if 'Vclay' in features_df.columns:
+                features_df['crack_clay'] = features_df['crack_density_efm'] * features_df['Vclay']
         
-        # Clean data
-        features = features.fillna(features.median())
-        features = features.replace([np.inf, -np.inf], np.nan).fillna(features.median())
+        # Fill any remaining NaN values
+        features_df = features_df.fillna(features_df.median())
         
-        return features
+        # Replace infinities
+        features_df = features_df.replace([np.inf, -np.inf], np.nan).fillna(features_df.median())
+        
+        return features_df
     
-    def train(self, X_train, y_train_vp, y_train_vs, model_type='Gradient Boosting'):
-        """Train ML models."""
-        # Store feature names
-        self.feature_names = X_train.columns.tolist()
-        
-        # Impute and scale
+    def train(self, X_train, y_train_vp, y_train_vs):
+        """
+        Train hybrid model with proper data preprocessing
+        """
+        # Impute missing values
         X_train_imputed = self.imputer.fit_transform(X_train)
+        
+        # Scale features
         X_train_scaled = self.scaler.fit_transform(X_train_imputed)
         
-        # Select model
-        if model_type == 'Gradient Boosting':
-            vp_model = GradientBoostingRegressor(
-                n_estimators=100, max_depth=4, learning_rate=0.05,
-                min_samples_split=5, random_state=42
-            )
-            vs_model = GradientBoostingRegressor(
-                n_estimators=100, max_depth=4, learning_rate=0.05,
-                min_samples_split=5, random_state=42
-            )
-        else:
-            vp_model = RandomForestRegressor(
-                n_estimators=100, max_depth=4, min_samples_split=5,
-                random_state=42
-            )
-            vs_model = RandomForestRegressor(
-                n_estimators=100, max_depth=4, min_samples_split=5,
-                random_state=42
-            )
+        # Train Vp model
+        self.ml_models['Vp'] = GradientBoostingRegressor(
+            n_estimators=200,
+            max_depth=6,
+            learning_rate=0.05,
+            min_samples_split=5,
+            min_samples_leaf=2,
+            random_state=42,
+            subsample=0.8
+        )
+        
+        # Train Vs model
+        self.ml_models['Vs'] = GradientBoostingRegressor(
+            n_estimators=200,
+            max_depth=6,
+            learning_rate=0.05,
+            min_samples_split=5,
+            min_samples_leaf=2,
+            random_state=42,
+            subsample=0.8
+        )
         
         # Train models
-        vp_model.fit(X_train_scaled, y_train_vp)
-        vs_model.fit(X_train_scaled, y_train_vs)
-        
-        self.ml_models['Vp'] = vp_model
-        self.ml_models['Vs'] = vs_model
+        self.ml_models['Vp'].fit(X_train_scaled, y_train_vp)
+        self.ml_models['Vs'].fit(X_train_scaled, y_train_vs)
         
         # Store feature importances
-        self.feature_importances['Vp'] = vp_model.feature_importances_
-        self.feature_importances['Vs'] = vs_model.feature_importances_
+        self.feature_importances['Vp'] = self.ml_models['Vp'].feature_importances_
+        self.feature_importances['Vs'] = self.ml_models['Vs'].feature_importances_
     
     def predict(self, X):
-        """Make predictions using trained models."""
-        if not self.ml_models:
-            raise ValueError("Models not trained.")
-        
-        # Handle missing features
-        missing_cols = set(self.feature_names) - set(X.columns)
-        for col in missing_cols:
-            X[col] = 0
-        
-        X = X[self.feature_names]
-        
-        # Preprocess
+        """
+        Make predictions with proper preprocessing
+        """
+        # Impute and scale
         X_imputed = self.imputer.transform(X)
         X_scaled = self.scaler.transform(X_imputed)
         
-        # Predict
+        # Make predictions
         vp_pred = self.ml_models['Vp'].predict(X_scaled)
         vs_pred = self.ml_models['Vs'].predict(X_scaled)
         
         return vp_pred, vs_pred
     
     def hybrid_predict(self, X, physics_weight=0.3):
-        """Combine ML and physics predictions."""
+        """
+        Combine ML predictions with physics-based predictions
+        """
         # ML predictions
         vp_ml, vs_ml = self.predict(X)
         
-        # Physics predictions if available
-        if physics_weight > 0 and 'Vp_efm' in X.columns and 'Vs_efm' in X.columns:
+        # Physics-based predictions if available
+        if 'Vp_efm' in X.columns and 'Vs_efm' in X.columns:
             vp_physics = X['Vp_efm'].values
             vs_physics = X['Vs_efm'].values
             
+            # Weighted combination
             vp_hybrid = (1 - physics_weight) * vp_ml + physics_weight * vp_physics
             vs_hybrid = (1 - physics_weight) * vs_ml + physics_weight * vs_physics
             
@@ -385,28 +397,31 @@ class HybridVelocityPredictor:
 # PLOTLY VISUALIZATION FUNCTIONS
 # ==============================================================================
 
-def create_scatter_with_r2(x_actual, y_predicted, title, x_label, y_label, color='blue'):
-    """Create scatter plot with R² value."""
-    # Calculate metrics
-    if len(x_actual) > 1:
-        r2 = r2_score(x_actual, y_predicted)
-        corr = np.corrcoef(x_actual, y_predicted)[0, 1]
-    else:
-        r2 = 0
-        corr = 0
+def create_plotly_scatter(x_actual, y_predicted, title, x_label, y_label, color='blue'):
+    """Create Plotly scatter plot with R² and perfect fit line"""
     
-    # Create plot
+    # Calculate R² and correlation
+    r2 = r2_score(x_actual, y_predicted)
+    correlation = np.corrcoef(x_actual, y_predicted)[0, 1]
+    
+    # Create figure
     fig = go.Figure()
     
-    # Add scatter points
+    # Add scatter trace
     fig.add_trace(go.Scatter(
         x=x_actual,
         y=y_predicted,
         mode='markers',
-        marker=dict(color=color, size=8, opacity=0.6),
+        marker=dict(
+            color=color,
+            size=8,
+            opacity=0.6,
+            line=dict(width=0.5, color='white')
+        ),
         name='Predictions',
-        text=[f'Actual: {a:.0f}<br>Predicted: {p:.0f}' 
-              for a, p in zip(x_actual, y_predicted)]
+        text=[f'Actual: {a:.0f}<br>Predicted: {p:.0f}<br>Error: {p-a:.0f}' 
+              for a, p in zip(x_actual, y_predicted)],
+        hoverinfo='text'
     ))
     
     # Add perfect fit line
@@ -421,37 +436,31 @@ def create_scatter_with_r2(x_actual, y_predicted, title, x_label, y_label, color
         name='Perfect Fit'
     ))
     
-    # Add regression line
-    if len(x_actual) > 1:
-        z = np.polyfit(x_actual, y_predicted, 1)
-        p = np.poly1d(z)
-        reg_line = p([min_val, max_val])
-        
-        fig.add_trace(go.Scatter(
-            x=[min_val, max_val],
-            y=reg_line,
-            mode='lines',
-            line=dict(color='green', width=2),
-            name=f'Regression (slope={z[0]:.3f})'
-        ))
-    
     # Update layout
     fig.update_layout(
-        title=f"{title}<br>R² = {r2:.4f}, Correlation = {corr:.4f}",
+        title=f"{title}<br>R² = {r2:.4f}, Correlation = {correlation:.4f}",
         xaxis_title=x_label,
         yaxis_title=y_label,
         template='plotly_white',
         height=500,
-        showlegend=True
+        showlegend=True,
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01
+        )
     )
     
+    # Add grid
     fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
     fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
     
-    return fig, r2, corr
+    return fig, r2, correlation
 
-def create_error_histogram(errors, title, color='blue'):
-    """Create histogram of prediction errors."""
+def create_plotly_histogram(errors, title, color='blue'):
+    """Create Plotly histogram of errors"""
+    
     fig = go.Figure()
     
     fig.add_trace(go.Histogram(
@@ -459,40 +468,61 @@ def create_error_histogram(errors, title, color='blue'):
         nbinsx=30,
         marker_color=color,
         opacity=0.7,
-        name='Error Distribution'
+        name='Error Distribution',
+        histnorm='probability density'
     ))
     
     # Add vertical lines
     mean_error = np.mean(errors)
     std_error = np.std(errors)
     
-    fig.add_vline(x=0, line_width=2, line_dash="dash", line_color="red")
-    fig.add_vline(x=mean_error, line_width=2, line_dash="dash", line_color="green")
+    fig.add_vline(x=0, line_width=2, line_dash="dash", line_color="red", 
+                  annotation_text="Zero Error", annotation_position="top right")
+    fig.add_vline(x=mean_error, line_width=2, line_dash="dash", line_color="green",
+                  annotation_text=f"Mean: {mean_error:.1f}%", annotation_position="top left")
+    
+    # Add normal distribution curve
+    if len(errors) > 10:
+        x_norm = np.linspace(errors.min(), errors.max(), 100)
+        y_norm = (1/(std_error * np.sqrt(2*np.pi))) * np.exp(-0.5*((x_norm - mean_error)/std_error)**2)
+        
+        fig.add_trace(go.Scatter(
+            x=x_norm,
+            y=y_norm,
+            mode='lines',
+            line=dict(color='black', width=2),
+            name='Normal Distribution'
+        ))
     
     fig.update_layout(
-        title=f"{title}<br>Mean: {mean_error:.2f}, Std: {std_error:.2f}",
-        xaxis_title='Error',
-        yaxis_title='Frequency',
+        title=f"{title}<br>Mean: {mean_error:.1f}%, Std: {std_error:.1f}%",
+        xaxis_title='Error (%)',
+        yaxis_title='Density',
         template='plotly_white',
         height=400,
+        showlegend=True,
         bargap=0.1
     )
     
-    return fig
+    return fig, mean_error, std_error
 
-def create_feature_importance_plot(feature_names, importances, title, color='steelblue'):
-    """Create horizontal bar plot for feature importance."""
+def create_plotly_feature_importance(feature_names, importances, title, color='steelblue'):
+    """Create Plotly horizontal bar plot for feature importance"""
+    
     # Sort features by importance
-    sorted_idx = np.argsort(importances)[::-1]
-    top_n = min(10, len(feature_names))
+    sorted_idx = np.argsort(importances)[-10:]  # Top 10 features
+    top_features = [feature_names[i] for i in sorted_idx]
+    top_importances = [importances[i] for i in sorted_idx]
     
     fig = go.Figure()
     
     fig.add_trace(go.Bar(
-        y=[feature_names[i] for i in sorted_idx[:top_n]],
-        x=[importances[i] for i in sorted_idx[:top_n]],
+        y=top_features,
+        x=top_importances,
         orientation='h',
-        marker_color=color
+        marker_color=color,
+        text=[f'{imp:.4f}' for imp in top_importances],
+        textposition='auto'
     ))
     
     fig.update_layout(
@@ -500,61 +530,481 @@ def create_feature_importance_plot(feature_names, importances, title, color='ste
         xaxis_title='Importance Score',
         yaxis_title='Features',
         template='plotly_white',
-        height=400,
+        height=500,
         showlegend=False
     )
     
     return fig
 
 # ==============================================================================
-# MAIN STREAMLIT APP
+# MAIN ANALYSIS PIPELINE WITH ERROR HANDLING
 # ==============================================================================
 
-def main():
-    """Main application function."""
+def load_and_prepare_data():
+    """Load and prepare data with error handling"""
+    try:
+        df = pd.read_csv('CarbonateFile.csv')
+        print(f"Loaded data with shape: {df.shape}")
+        
+        # Check for required columns
+        required_cols = ['Vp', 'Vs', 'porosity', 'rho']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        
+        if missing_cols:
+            print(f"Warning: Missing columns: {missing_cols}")
+            return None
+        
+        # Fill missing values
+        df = df.fillna(df.median())
+        
+        # Replace infinities
+        df = df.replace([np.inf, -np.inf], np.nan).fillna(df.median())
+        
+        return df
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        return None
+
+def estimate_matrix_properties(df):
+    """Estimate matrix properties from low-porosity samples"""
+    # Find low-porosity samples (bottom 25%)
+    porosity_threshold = df['porosity'].quantile(0.25)
+    low_porosity_samples = df[df['porosity'] <= porosity_threshold]
     
-    st.markdown('<h1 class="main-header">🎯 Hybrid Physics-ML Velocity Predictor</h1>', 
+    if len(low_porosity_samples) == 0:
+        low_porosity_samples = df.nsmallest(10, 'porosity')
+    
+    matrix_props = {
+        'Vp': low_porosity_samples['Vp'].mean(),
+        'Vs': low_porosity_samples['Vs'].mean(),
+        'rho': low_porosity_samples['rho'].mean()
+    }
+    
+    print(f"\nMatrix properties estimated from {len(low_porosity_samples)} samples:")
+    print(f"Vp: {matrix_props['Vp']:.0f} m/s")
+    print(f"Vs: {matrix_props['Vs']:.0f} m/s")
+    print(f"ρ: {matrix_props['rho']:.2f} g/cc")
+    
+    return matrix_props
+
+def run_analysis():
+    """Main analysis pipeline"""
+    print("="*70)
+    print("FIXED HYBRID PHYSICS-ML VELOCITY PREDICTION")
+    print("="*70)
+    
+    # Load data
+    df = load_and_prepare_data()
+    if df is None:
+        return
+    
+    # Estimate matrix properties
+    matrix_props = estimate_matrix_properties(df)
+    
+    # Initialize physics model
+    crack_props = {
+        'aspect_ratio': 0.01,
+        'fluid_K': 2.25e9,  # Water bulk modulus in Pa
+        'fluid_rho': 1000   # Water density in kg/m³
+    }
+    
+    efm_model = EffectiveFieldMethod(matrix_props, crack_props)
+    
+    # Initialize hybrid model
+    hybrid_model = HybridVelocityPredictor(matrix_props)
+    hybrid_model.efm_model = efm_model
+    
+    # Create features
+    print("\nCreating hybrid features...")
+    df_features = hybrid_model.create_safe_features(df)
+    
+    # Select feature columns (exclude target variables)
+    exclude_cols = ['Vp', 'Vs', 'VPVSMOD', 'PIMPMOD', 'SIMPMOD']
+    if 'DEPTH' in df.columns:
+        exclude_cols.append('DEPTH')
+    
+    feature_cols = [col for col in df_features.columns 
+                   if col not in exclude_cols and pd.api.types.is_numeric_dtype(df_features[col])]
+    
+    X = df_features[feature_cols]
+    y_vp = df['Vp'].values
+    y_vs = df['Vs'].values
+    
+    print(f"Created {len(feature_cols)} features")
+    print(f"Features: {feature_cols}")
+    
+    # Check for NaN in features
+    nan_count = X.isna().sum().sum()
+    if nan_count > 0:
+        print(f"Warning: {nan_count} NaN values in features, filling with median...")
+        X = X.fillna(X.median())
+    
+    # Split data
+    X_train, X_test, y_vp_train, y_vp_test, y_vs_train, y_vs_test = train_test_split(
+        X, y_vp, y_vs, test_size=0.2, random_state=42
+    )
+    
+    print(f"\nData split:")
+    print(f"Training: {len(X_train)} samples")
+    print(f"Testing: {len(X_test)} samples")
+    
+    # Train hybrid model
+    print("\nTraining hybrid model...")
+    hybrid_model.train(X_train, y_vp_train, y_vs_train)
+    
+    # Make predictions
+    print("\nMaking predictions...")
+    
+    # Test predictions
+    vp_test_pred, vs_test_pred = hybrid_model.hybrid_predict(X_test, physics_weight=0.3)
+    
+    # Calculate correlations
+    vp_corr = np.corrcoef(y_vp_test, vp_test_pred)[0, 1]
+    vs_corr = np.corrcoef(y_vs_test, vs_test_pred)[0, 1]
+    
+    print("\n" + "="*70)
+    print("TEST SET RESULTS")
+    print("="*70)
+    print(f"Vp correlation: {vp_corr:.4f}")
+    print(f"Vs correlation: {vs_corr:.4f}")
+    
+    # Full dataset predictions
+    print("\nMaking predictions on full dataset...")
+    vp_full_pred, vs_full_pred = hybrid_model.hybrid_predict(X, physics_weight=0.3)
+    
+    vp_full_corr = np.corrcoef(y_vp, vp_full_pred)[0, 1]
+    vs_full_corr = np.corrcoef(y_vs, vs_full_pred)[0, 1]
+    
+    print(f"\nFull dataset correlations:")
+    print(f"Vp correlation: {vp_full_corr:.4f}")
+    print(f"Vs correlation: {vs_full_corr:.4f}")
+    
+    # Add predictions to dataframe
+    df['Vp_hybrid_pred'] = vp_full_pred
+    df['Vs_hybrid_pred'] = vs_full_pred
+    df['Vp_error_%'] = 100 * (vp_full_pred - y_vp) / y_vp
+    df['Vs_error_%'] = 100 * (vs_full_pred - y_vs) / y_vs
+    
+    # Save results
+    output_file = 'carbonate_velocity_hybrid_results.csv'
+    df.to_csv(output_file, index=False)
+    print(f"\nResults saved to: {output_file}")
+    
+    # Create visualizations with Plotly
+    create_plotly_visualizations(df, vp_full_pred, vs_full_pred, vp_full_corr, vs_full_corr, 
+                                hybrid_model, feature_cols, X_test, y_vp_test, y_vs_test, 
+                                vp_test_pred, vs_test_pred)
+    
+    return df, vp_full_corr, vs_full_corr
+
+def create_plotly_visualizations(df, vp_pred, vs_pred, vp_corr, vs_corr, 
+                               hybrid_model, feature_cols, X_test, y_vp_test, y_vs_test,
+                               vp_test_pred, vs_test_pred):
+    """Create comprehensive visualizations with Plotly"""
+    
+    # Create a container for all plots
+    with st.container():
+        st.markdown('<h2 class="sub-header">📊 Visualization Dashboard</h2>', unsafe_allow_html=True)
+        
+        # Create tabs for different visualizations
+        tab1, tab2, tab3 = st.tabs(["📈 Prediction Plots", "📊 Error Analysis", "🔍 Feature Importance"])
+        
+        with tab1:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Vp cross-plot
+                fig_vp, r2_vp, corr_vp = create_plotly_scatter(
+                    df['Vp'], vp_pred,
+                    "Vp Prediction",
+                    "Measured Vp (m/s)",
+                    "Predicted Vp (m/s)",
+                    'blue'
+                )
+                st.plotly_chart(fig_vp, use_container_width=True)
+            
+            with col2:
+                # Vs cross-plot
+                fig_vs, r2_vs, corr_vs = create_plotly_scatter(
+                    df['Vs'], vs_pred,
+                    "Vs Prediction",
+                    "Measured Vs (m/s)",
+                    "Predicted Vs (m/s)",
+                    'green'
+                )
+                st.plotly_chart(fig_vs, use_container_width=True)
+            
+            # Vp/Vs ratio plot
+            st.markdown('<h3 class="section-header">Vp/Vs Ratio Prediction</h3>', unsafe_allow_html=True)
+            
+            actual_vpvs = df['Vp'] / df['Vs']
+            pred_vpvs = vp_pred / vs_pred
+            
+            fig_vpvs, r2_vpvs, corr_vpvs = create_plotly_scatter(
+                actual_vpvs, pred_vpvs,
+                "Vp/Vs Ratio",
+                "Measured Vp/Vs",
+                "Predicted Vp/Vs",
+                'purple'
+            )
+            st.plotly_chart(fig_vpvs, use_container_width=True)
+        
+        with tab2:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Vp error histogram
+                vp_error = 100 * (vp_pred - df['Vp']) / df['Vp']
+                fig_vp_error, vp_mean_error, vp_std_error = create_plotly_histogram(
+                    vp_error, "Vp Error Distribution", 'blue'
+                )
+                st.plotly_chart(fig_vp_error, use_container_width=True)
+            
+            with col2:
+                # Vs error histogram
+                vs_error = 100 * (vs_pred - df['Vs']) / df['Vs']
+                fig_vs_error, vs_mean_error, vs_std_error = create_plotly_histogram(
+                    vs_error, "Vs Error Distribution", 'green'
+                )
+                st.plotly_chart(fig_vs_error, use_container_width=True)
+            
+            # Error statistics
+            st.markdown('<h3 class="section-header">Error Statistics</h3>', unsafe_allow_html=True)
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Vp Mean Error", f"{vp_mean_error:.1f}%")
+            with col2:
+                st.metric("Vp Std Error", f"{vp_std_error:.1f}%")
+            with col3:
+                st.metric("Vs Mean Error", f"{vs_mean_error:.1f}%")
+            with col4:
+                st.metric("Vs Std Error", f"{vs_std_error:.1f}%")
+        
+        with tab3:
+            if hasattr(hybrid_model, 'feature_importances') and 'Vp' in hybrid_model.feature_importances:
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Vp feature importance
+                    importances_vp = hybrid_model.feature_importances['Vp']
+                    fig_vp_importance = create_plotly_feature_importance(
+                        feature_cols, importances_vp,
+                        "Top Features for Vp Prediction",
+                        'blue'
+                    )
+                    st.plotly_chart(fig_vp_importance, use_container_width=True)
+                
+                with col2:
+                    # Vs feature importance
+                    importances_vs = hybrid_model.feature_importances['Vs']
+                    fig_vs_importance = create_plotly_feature_importance(
+                        feature_cols, importances_vs,
+                        "Top Features for Vs Prediction",
+                        'green'
+                    )
+                    st.plotly_chart(fig_vs_importance, use_container_width=True)
+    
+    # Print achievement status
+    st.markdown("---")
+    st.markdown('<h2 class="sub-header">🎯 Target Achievement</h2>', unsafe_allow_html=True)
+    
+    if vp_corr >= 0.75 and vs_corr >= 0.75:
+        st.markdown('<div class="success-box">🎉 SUCCESS: Both Vp and Vs correlations > 0.75 achieved!</div>', 
+                   unsafe_allow_html=True)
+    elif vp_corr >= 0.75:
+        st.markdown(f'<div class="warning-box">✓ Vp achieved >0.75: {vp_corr:.4f}<br>✗ Vs needs improvement: {vs_corr:.4f}</div>', 
+                   unsafe_allow_html=True)
+    elif vs_corr >= 0.75:
+        st.markdown(f'<div class="warning-box">✗ Vp needs improvement: {vp_corr:.4f}<br>✓ Vs achieved >0.75: {vs_corr:.4f}</div>', 
+                   unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="warning-box">✗ Both need improvement: Vp={vp_corr:.4f}, Vs={vs_corr:.4f}</div>', 
+                   unsafe_allow_html=True)
+    
+    # Show sample of best predictions
+    st.markdown("---")
+    st.markdown('<h2 class="sub-header">📋 Best Predictions</h2>', unsafe_allow_html=True)
+    
+    df['combined_error'] = (np.abs(df['Vp_error_%']) + np.abs(df['Vs_error_%'])) / 2
+    best_samples = df.nsmallest(5, 'combined_error')
+    
+    sample_cols = ['Vp', 'Vp_hybrid_pred', 'Vp_error_%', 
+                   'Vs', 'Vs_hybrid_pred', 'Vs_error_%',
+                   'porosity', 'combined_error']
+    
+    if 'Vclay' in df.columns:
+        sample_cols.append('Vclay')
+    
+    st.dataframe(best_samples[sample_cols].round(2))
+
+def plot_physics_insights(df, vp_pred, vs_pred):
+    """Plot physics-based insights with Plotly"""
+    
+    # Create subplots
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=('Vp vs Porosity', 'Vs vs Porosity'),
+        horizontal_spacing=0.15
+    )
+    
+    # 1. Porosity vs Vp trend
+    fig.add_trace(
+        go.Scatter(
+            x=df['porosity'],
+            y=df['Vp'],
+            mode='markers',
+            marker=dict(color='blue', size=6, opacity=0.3),
+            name='Measured Vp'
+        ),
+        row=1, col=1
+    )
+    
+    fig.add_trace(
+        go.Scatter(
+            x=df['porosity'],
+            y=vp_pred,
+            mode='markers',
+            marker=dict(color='red', size=6, opacity=0.3, symbol='circle-open'),
+            name='Predicted Vp'
+        ),
+        row=1, col=1
+    )
+    
+    # Add trend line for predicted Vp
+    if len(df) > 1:
+        z_vp = np.polyfit(df['porosity'], vp_pred, 2)
+        p_vp = np.poly1d(z_vp)
+        porosity_sorted = np.sort(df['porosity'])
+        
+        fig.add_trace(
+            go.Scatter(
+                x=porosity_sorted,
+                y=p_vp(porosity_sorted),
+                mode='lines',
+                line=dict(color='red', width=2),
+                name='Vp Trend'
+            ),
+            row=1, col=1
+        )
+    
+    # 2. Porosity vs Vs trend
+    fig.add_trace(
+        go.Scatter(
+            x=df['porosity'],
+            y=df['Vs'],
+            mode='markers',
+            marker=dict(color='green', size=6, opacity=0.3),
+            name='Measured Vs',
+            showlegend=False
+        ),
+        row=1, col=2
+    )
+    
+    fig.add_trace(
+        go.Scatter(
+            x=df['porosity'],
+            y=vs_pred,
+            mode='markers',
+            marker=dict(color='orange', size=6, opacity=0.3, symbol='circle-open'),
+            name='Predicted Vs',
+            showlegend=False
+        ),
+        row=1, col=2
+    )
+    
+    # Add trend line for predicted Vs
+    if len(df) > 1:
+        z_vs = np.polyfit(df['porosity'], vs_pred, 2)
+        p_vs = np.poly1d(z_vs)
+        
+        fig.add_trace(
+            go.Scatter(
+                x=porosity_sorted,
+                y=p_vs(porosity_sorted),
+                mode='lines',
+                line=dict(color='orange', width=2),
+                name='Vs Trend',
+                showlegend=False
+            ),
+            row=1, col=2
+        )
+    
+    # Update layout
+    fig.update_layout(
+        title='Physics-Based Trend Analysis',
+        template='plotly_white',
+        height=500,
+        showlegend=True,
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01
+        )
+    )
+    
+    fig.update_xaxes(title_text='Porosity', row=1, col=1)
+    fig.update_xaxes(title_text='Porosity', row=1, col=2)
+    fig.update_yaxes(title_text='Vp (m/s)', row=1, col=1)
+    fig.update_yaxes(title_text='Vs (m/s)', row=1, col=2)
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+# ==============================================================================
+# STREAMLIT APP MAIN FUNCTION
+# ==============================================================================
+
+def streamlit_app():
+    """Streamlit application main function"""
+    
+    st.markdown('<h1 class="main-header">🎯 Hybrid Physics-ML Velocity Prediction for Carbonate Rocks</h1>', 
                 unsafe_allow_html=True)
-    
-    # Initialize session state
-    if 'df' not in st.session_state:
-        st.session_state.df = None
-    if 'results' not in st.session_state:
-        st.session_state.results = None
-    if 'model' not in st.session_state:
-        st.session_state.model = None
-    if 'analysis_complete' not in st.session_state:
-        st.session_state.analysis_complete = False
     
     # Sidebar
     with st.sidebar:
         st.markdown("## 📊 Navigation")
-        page = st.radio(
-            "Select Page:",
-            ["🏠 Home", "📁 Upload Data", "⚙️ Configure", "🚀 Run Analysis", "📈 Results"]
+        app_mode = st.radio(
+            "Select Mode:",
+            ["🏠 Home", "📁 Data Upload", "⚙️ Model Configuration", "🚀 Run Analysis", "📈 Results", "🔮 Single Prediction"]
         )
         
         st.markdown("---")
         st.markdown("## ⚙️ Settings")
         
         # Global settings
-        physics_weight = st.slider("Physics Weight", 0.0, 1.0, 0.3, 0.1)
-        test_size = st.slider("Test Size (%)", 10, 40, 20, 5)
+        physics_weight = st.slider("Physics Weight", 0.0, 1.0, 0.3, 0.1,
+                                 help="Weight for physics prediction (0=pure ML, 1=pure physics)")
+        test_size = st.slider("Test Size (%)", 10, 40, 20, 5,
+                            help="Percentage of data for testing")
         model_type = st.selectbox("ML Model", ["Gradient Boosting", "Random Forest"])
         
         st.markdown("---")
         st.markdown("## 📚 About")
         st.info("""
-        **Hybrid Approach:**
-        - Physics: Effective Field Method
-        - ML: Gradient Boosting / Random Forest
-        - Target: Correlation > 0.75
+        This app predicts acoustic velocities (Vp, Vs) in carbonate rocks using:
+        
+        - **Physics**: Effective Field Method (EFM)
+        - **Machine Learning**: Gradient Boosting/Random Forest
+        - **Hybrid**: Weighted combination
+        
+        Target: Correlation > 0.75
         """)
+    
+    # Initialize session state
+    if 'df' not in st.session_state:
+        st.session_state.df = None
+    if 'results' not in st.session_state:
+        st.session_state.results = None
+    if 'hybrid_model' not in st.session_state:
+        st.session_state.hybrid_model = None
+    if 'analysis_complete' not in st.session_state:
+        st.session_state.analysis_complete = False
     
     # ==========================================================================
     # HOME PAGE
     # ==========================================================================
-    if page == "🏠 Home":
+    if app_mode == "🏠 Home":
         st.markdown("## Welcome to Carbonate Velocity Predictor")
         
         col1, col2 = st.columns(2)
@@ -562,7 +1012,7 @@ def main():
         with col1:
             st.markdown("### 📊 About This App")
             st.markdown("""
-            This application predicts acoustic velocities in carbonate rocks using:
+            This application predicts acoustic velocities (Vp, Vs) in carbonate rocks using:
             
             1. **Physics Model**: Effective Field Method based on micromechanics
             2. **Machine Learning**: Ensemble methods for complex relationships
@@ -621,9 +1071,9 @@ def main():
         )
     
     # ==========================================================================
-    # UPLOAD DATA PAGE
+    # DATA UPLOAD PAGE
     # ==========================================================================
-    elif page == "📁 Upload Data":
+    elif app_mode == "📁 Data Upload":
         st.markdown("## 📁 Upload Data")
         
         uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
@@ -681,51 +1131,11 @@ def main():
                 
             except Exception as e:
                 st.error(f"❌ Error reading file: {str(e)}")
-        
-        # Data visualization if data is loaded
-        if st.session_state.df is not None:
-            st.markdown("---")
-            st.markdown("### 📈 Data Visualization")
-            
-            df = st.session_state.df
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            
-            if len(numeric_cols) >= 2:
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    x_axis = st.selectbox("X-axis", numeric_cols, 
-                                         index=numeric_cols.index('porosity') if 'porosity' in numeric_cols else 0)
-                with col2:
-                    y_axis = st.selectbox("Y-axis", numeric_cols,
-                                         index=numeric_cols.index('Vp') if 'Vp' in numeric_cols else 1)
-                
-                # Create scatter plot
-                fig = px.scatter(df, x=x_axis, y=y_axis, 
-                               title=f'{y_axis} vs {x_axis}',
-                               template='plotly_white')
-                
-                fig.update_traces(marker=dict(size=8, opacity=0.6))
-                fig.update_layout(height=400)
-                
-                st.plotly_chart(fig, use_container_width=True)
-            
-            # Distribution plot
-            st.markdown("### 📊 Distribution Analysis")
-            
-            hist_col = st.selectbox("Select column for histogram", numeric_cols)
-            
-            fig = px.histogram(df, x=hist_col, nbins=30,
-                             title=f"Distribution of {hist_col}",
-                             template='plotly_white')
-            
-            fig.update_layout(height=400, bargap=0.1)
-            st.plotly_chart(fig, use_container_width=True)
     
     # ==========================================================================
-    # CONFIGURE PAGE
+    # MODEL CONFIGURATION PAGE
     # ==========================================================================
-    elif page == "⚙️ Configure":
+    elif app_mode == "⚙️ Model Configuration":
         st.markdown("## ⚙️ Model Configuration")
         
         if st.session_state.df is None:
@@ -777,12 +1187,9 @@ def main():
                 estimated_vs = 3000
                 estimated_rho = 2.71
             
-            col_a, col_b = st.columns(2)
-            with col_a:
-                matrix_vp = st.number_input("Matrix Vp (m/s)", 3000, 7000, int(estimated_vp), 100)
-                matrix_vs = st.number_input("Matrix Vs (m/s)", 1500, 4000, int(estimated_vs), 100)
-            with col_b:
-                matrix_rho = st.number_input("Matrix ρ (g/cc)", 2.0, 3.0, float(estimated_rho), 0.01)
+            matrix_vp = st.number_input("Matrix Vp (m/s)", 3000, 7000, int(estimated_vp), 100)
+            matrix_vs = st.number_input("Matrix Vs (m/s)", 1500, 4000, int(estimated_vs), 100)
+            matrix_rho = st.number_input("Matrix ρ (g/cc)", 2.0, 3.0, float(estimated_rho), 0.01)
             
             matrix_props = {
                 'Vp': matrix_vp,
@@ -812,7 +1219,7 @@ def main():
     # ==========================================================================
     # RUN ANALYSIS PAGE
     # ==========================================================================
-    elif page == "🚀 Run Analysis":
+    elif app_mode == "🚀 Run Analysis":
         st.markdown("## 🚀 Run Analysis")
         
         if st.session_state.df is None:
@@ -855,7 +1262,7 @@ def main():
         status_text.text("Step 2/6: Creating features...")
         progress_bar.progress(30)
         
-        df_features = hybrid_model.create_features(df[selected_features])
+        df_features = hybrid_model.create_safe_features(df[selected_features])
         
         # Select feature columns
         exclude_cols = ['Vp', 'Vs']
@@ -879,7 +1286,7 @@ def main():
         status_text.text("Step 4/6: Training model...")
         progress_bar.progress(70)
         
-        hybrid_model.train(X_train, y_vp_train, y_vs_train, model_type)
+        hybrid_model.train(X_train, y_vp_train, y_vs_train)
         
         # Step 5: Make predictions
         status_text.text("Step 5/6: Making predictions...")
@@ -910,6 +1317,7 @@ def main():
             'model': hybrid_model
         }
         
+        st.session_state.hybrid_model = hybrid_model
         st.session_state.analysis_complete = True
         
         # Display metrics
@@ -960,82 +1368,29 @@ def main():
         else:
             st.markdown(f'<div class="warning-box">⚠️ NEEDS IMPROVEMENT: Both Vp ({vp_corr:.4f}) and Vs ({vs_corr:.4f}) below target 0.75</div>', 
                        unsafe_allow_html=True)
-        
-        # Quick visualization
-        st.markdown("---")
-        st.markdown("### 👁️ Quick Preview")
-        
-        # Create comparison plot
-        fig = make_subplots(
-            rows=1, cols=2,
-            subplot_titles=(f'Vp (R²={vp_r2:.3f})', f'Vs (R²={vs_r2:.3f})'),
-            horizontal_spacing=0.15
-        )
-        
-        # Vp plot
-        fig.add_trace(
-            go.Scatter(x=y_vp_test, y=vp_test_pred, mode='markers',
-                      marker=dict(color='blue', opacity=0.6), name='Vp'),
-            row=1, col=1
-        )
-        
-        # Vs plot
-        fig.add_trace(
-            go.Scatter(x=y_vs_test, y=vs_test_pred, mode='markers',
-                      marker=dict(color='green', opacity=0.6), name='Vs'),
-            row=1, col=2
-        )
-        
-        # Add perfect fit lines
-        for col in [1, 2]:
-            data = y_vp_test if col == 1 else y_vs_test
-            pred = vp_test_pred if col == 1 else vs_test_pred
-            min_val = min(min(data), min(pred))
-            max_val = max(max(data), max(pred))
-            
-            fig.add_trace(
-                go.Scatter(x=[min_val, max_val], y=[min_val, max_val],
-                          mode='lines', line=dict(color='red', dash='dash'),
-                          showlegend=False),
-                row=1, col=col
-            )
-        
-        fig.update_layout(height=400, showlegend=False)
-        fig.update_xaxes(title_text='Measured (m/s)', row=1, col=1)
-        fig.update_xaxes(title_text='Measured (m/s)', row=1, col=2)
-        fig.update_yaxes(title_text='Predicted (m/s)', row=1, col=1)
-        fig.update_yaxes(title_text='Predicted (m/s)', row=1, col=2)
-        
-        st.plotly_chart(fig, use_container_width=True)
     
     # ==========================================================================
     # RESULTS PAGE
     # ==========================================================================
-    elif page == "📈 Results":
-        st.markdown("## 📈 Detailed Results")
+    elif app_mode == "📈 Results":
+        st.markdown("## 📈 Results & Visualizations")
         
-        if not st.session_state.analysis_complete:
-            st.warning("⚠️ Please run the analysis first.")
+        if st.session_state.results is None:
+            st.warning("⚠️ Please run the analysis first")
             return
         
         results = st.session_state.results
-        hybrid_model = results['model']
         
         # Create tabs
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "📊 Prediction Plots", 
-            "📈 Error Analysis", 
-            "🔍 Features",
-            "📋 Data"
-        ])
+        tab1, tab2, tab3 = st.tabs(["📊 Predictions", "📈 Error Analysis", "🔍 Feature Importance"])
         
         with tab1:
             st.markdown("### 📊 Prediction Results")
             
-            # Vp prediction plot
-            fig_vp, r2_vp, corr_vp = create_scatter_with_r2(
+            # Vp plot
+            fig_vp, r2_vp, corr_vp = create_plotly_scatter(
                 results['y_vp_test'], results['vp_test_pred'],
-                "P-wave Velocity (Vp) Prediction",
+                "Vp Prediction",
                 "Measured Vp (m/s)",
                 "Predicted Vp (m/s)",
                 'blue'
@@ -1043,32 +1398,16 @@ def main():
             
             st.plotly_chart(fig_vp, use_container_width=True)
             
-            # Vs prediction plot
-            fig_vs, r2_vs, corr_vs = create_scatter_with_r2(
+            # Vs plot
+            fig_vs, r2_vs, corr_vs = create_plotly_scatter(
                 results['y_vs_test'], results['vs_test_pred'],
-                "S-wave Velocity (Vs) Prediction",
+                "Vs Prediction",
                 "Measured Vs (m/s)",
                 "Predicted Vs (m/s)",
                 'green'
             )
             
             st.plotly_chart(fig_vs, use_container_width=True)
-            
-            # Vp/Vs ratio
-            st.markdown("### 📐 Vp/Vs Ratio")
-            
-            vpvs_actual = results['y_vp_test'] / results['y_vs_test']
-            vpvs_pred = results['vp_test_pred'] / results['vs_test_pred']
-            
-            fig_vpvs, r2_vpvs, corr_vpvs = create_scatter_with_r2(
-                vpvs_actual, vpvs_pred,
-                "Vp/Vs Ratio Prediction",
-                "Actual Vp/Vs",
-                "Predicted Vp/Vs",
-                'purple'
-            )
-            
-            st.plotly_chart(fig_vpvs, use_container_width=True)
         
         with tab2:
             st.markdown("### 📈 Error Analysis")
@@ -1080,44 +1419,24 @@ def main():
             col1, col2 = st.columns(2)
             
             with col1:
-                fig_vp_error = create_error_histogram(
+                fig_vp_error, vp_mean_error, vp_std_error = create_plotly_histogram(
                     vp_error, "Vp Error Distribution", 'blue'
                 )
                 st.plotly_chart(fig_vp_error, use_container_width=True)
             
             with col2:
-                fig_vs_error = create_error_histogram(
+                fig_vs_error, vs_mean_error, vs_std_error = create_plotly_histogram(
                     vs_error, "Vs Error Distribution", 'green'
                 )
                 st.plotly_chart(fig_vs_error, use_container_width=True)
-            
-            # Error statistics
-            st.markdown("### 📊 Error Statistics")
-            
-            error_stats = pd.DataFrame({
-                'Metric': ['Mean Error (%)', 'Std Error (%)', 'MAE (m/s)', 'RMSE (m/s)'],
-                'Vp': [
-                    f"{vp_error.mean():.2f}",
-                    f"{vp_error.std():.2f}",
-                    f"{mean_absolute_error(results['y_vp_test'], results['vp_test_pred']):.0f}",
-                    f"{np.sqrt(mean_squared_error(results['y_vp_test'], results['vp_test_pred'])):.0f}"
-                ],
-                'Vs': [
-                    f"{vs_error.mean():.2f}",
-                    f"{vs_error.std():.2f}",
-                    f"{mean_absolute_error(results['y_vs_test'], results['vs_test_pred']):.0f}",
-                    f"{np.sqrt(mean_squared_error(results['y_vs_test'], results['vs_test_pred'])):.0f}"
-                ]
-            })
-            
-            st.dataframe(error_stats, use_container_width=True)
         
         with tab3:
             st.markdown("### 🔍 Feature Importance")
             
+            hybrid_model = results['model']
             if hasattr(hybrid_model, 'feature_importances'):
                 # Vp feature importance
-                fig_vp_imp = create_feature_importance_plot(
+                fig_vp_imp = create_plotly_feature_importance(
                     results['feature_cols'],
                     hybrid_model.feature_importances['Vp'],
                     "Top Features for Vp Prediction",
@@ -1127,7 +1446,7 @@ def main():
                 st.plotly_chart(fig_vp_imp, use_container_width=True)
                 
                 # Vs feature importance
-                fig_vs_imp = create_feature_importance_plot(
+                fig_vs_imp = create_plotly_feature_importance(
                     results['feature_cols'],
                     hybrid_model.feature_importances['Vs'],
                     "Top Features for Vs Prediction",
@@ -1135,91 +1454,83 @@ def main():
                 )
                 
                 st.plotly_chart(fig_vs_imp, use_container_width=True)
-            
-            # Feature table
-            st.markdown("### 📋 Feature Summary")
-            
-            feature_info = pd.DataFrame({
-                'Feature': results['feature_cols'],
-                'Type': 'Input' if len(results['feature_cols']) <= 10 else 'Engineered'
-            })
-            
-            st.dataframe(feature_info, use_container_width=True)
+    
+    # ==========================================================================
+    # SINGLE PREDICTION PAGE
+    # ==========================================================================
+    elif app_mode == "🔮 Single Prediction":
+        st.markdown("## 🔮 Single Sample Prediction")
         
-        with tab4:
-            st.markdown("### 📋 Prediction Results")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 📝 Input Parameters")
             
-            # Create results table
-            results_df = pd.DataFrame({
-                'Actual_Vp': results['y_vp_test'],
-                'Predicted_Vp': results['vp_test_pred'],
-                'Vp_Error_%': 100 * (results['vp_test_pred'] - results['y_vp_test']) / results['y_vp_test'],
-                'Actual_Vs': results['y_vs_test'],
-                'Predicted_Vs': results['vs_test_pred'],
-                'Vs_Error_%': 100 * (results['vs_test_pred'] - results['y_vs_test']) / results['y_vs_test']
-            })
+            porosity = st.slider("Porosity", 0.0, 0.5, 0.15, 0.01)
+            clay_content = st.slider("Clay Content (%)", 0.0, 100.0, 10.0, 1.0)
+            saturation = st.slider("Water Saturation", 0.0, 1.0, 1.0, 0.1)
+            density = st.number_input("Bulk Density (g/cc)", 2.0, 3.0, 2.65, 0.01)
+        
+        with col2:
+            st.markdown("### 🎯 Prediction")
             
-            # Add some original features if available
-            original_df = st.session_state.df
-            test_indices = results['X_test'].index
-            
-            for col in ['porosity', 'rho', 'Vclay']:
-                if col in original_df.columns:
-                    results_df[col] = original_df.loc[test_indices, col].values
-            
-            # Sort by absolute Vp error
-            results_df['Abs_Vp_Error'] = np.abs(results_df['Vp_Error_%'])
-            results_df = results_df.sort_values('Abs_Vp_Error')
-            
-            st.dataframe(results_df.round(2), use_container_width=True)
-            
-            # Download button
-            csv = results_df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Results",
-                data=csv,
-                file_name="velocity_predictions.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-            
-            # Best and worst predictions
-            st.markdown("### 🏆 Best & Worst Predictions")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("#### ✅ Best Predictions (Lowest Error)")
-                best = results_df.nsmallest(5, 'Abs_Vp_Error')
-                st.dataframe(best[['Actual_Vp', 'Predicted_Vp', 'Vp_Error_%']].round(2))
-            
-            with col2:
-                st.markdown("#### ❌ Worst Predictions (Highest Error)")
-                worst = results_df.nlargest(5, 'Abs_Vp_Error')
-                st.dataframe(worst[['Actual_Vp', 'Predicted_Vp', 'Vp_Error_%']].round(2))
-            
-            # Overall summary
-            st.markdown("### 📊 Overall Summary")
-            
-            summary_data = {
-                'Total Samples': len(results['y_vp']),
-                'Test Samples': len(results['y_vp_test']),
-                'Vp R²': f"{r2_score(results['y_vp_test'], results['vp_test_pred']):.4f}",
-                'Vs R²': f"{r2_score(results['y_vs_test'], results['vs_test_pred']):.4f}",
-                'Vp Correlation': f"{np.corrcoef(results['y_vp_test'], results['vp_test_pred'])[0, 1]:.4f}",
-                'Vs Correlation': f"{np.corrcoef(results['y_vs_test'], results['vs_test_pred'])[0, 1]:.4f}",
-                'Features Used': len(results['feature_cols']),
-                'Physics Weight': physics_weight
-            }
-            
-            summary_df = pd.DataFrame(list(summary_data.items()), 
-                                    columns=['Metric', 'Value'])
-            
-            st.dataframe(summary_df, use_container_width=True)
+            if st.button("Predict", use_container_width=True):
+                # Get matrix properties
+                matrix_props = st.session_state.get('matrix_props', {
+                    'Vp': 5500, 'Vs': 3000, 'rho': 2.71
+                })
+                
+                crack_props = st.session_state.get('crack_props', {
+                    'aspect_ratio': 0.01,
+                    'fluid_K': 2.25e9
+                })
+                
+                # Initialize physics model
+                efm_model = EffectiveFieldMethod(matrix_props, crack_props)
+                
+                # Make prediction
+                crack_density, beta = efm_model.estimate_crack_parameters(
+                    porosity, saturation, 100, clay_content
+                )
+                
+                eff_props = efm_model.calculate_effective_properties(crack_density, beta)
+                
+                # Display results
+                st.markdown("#### Results:")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("P-wave Velocity (Vp)", f"{eff_props['Vp']:.0f} m/s")
+                    st.metric("S-wave Velocity (Vs)", f"{eff_props['Vs']:.0f} m/s")
+                
+                with col2:
+                    st.metric("Vp/Vs Ratio", f"{eff_props['Vp']/eff_props['Vs']:.2f}")
+                    st.metric("Crack Density", f"{crack_density:.3f}")
+                
+                # Create bar chart
+                fig = go.Figure()
+                
+                fig.add_trace(go.Bar(
+                    x=['Vp', 'Vs'],
+                    y=[eff_props['Vp'], eff_props['Vs']],
+                    marker_color=['blue', 'green'],
+                    text=[f'{eff_props["Vp"]:.0f} m/s', f'{eff_props["Vs"]:.0f} m/s'],
+                    textposition='auto'
+                ))
+                
+                fig.update_layout(
+                    title='Predicted Velocities',
+                    xaxis_title='Velocity Type',
+                    yaxis_title='Velocity (m/s)',
+                    template='plotly_white',
+                    height=400
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
 
 # ==============================================================================
-# RUN APPLICATION
+# RUN THE APP
 # ==============================================================================
 
 if __name__ == "__main__":
-    main()
+    streamlit_app()
